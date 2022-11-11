@@ -1,29 +1,114 @@
-## What this does?
-This repo along with https://github.com/saha-rajdeep/kubernetesmanifest creates a Jenkins pipeline with GitOps to deploy code into a Kubernetes cluster. CI part is done via Jenkins and CD part via ArgoCD (GitOps).
+# Openstack Deploy on kubernetes by ArgoCD
+Documents Link:
+https://github.com/helm/charts/tree/master/stable/nginx-ingress
+https://argoproj.github.io/argo-cd/
 
-## Jenkins installation
-Jenkins is installed on EC2. Follow the instructions on https://www.jenkins.io/doc/tutorials/tutorial-for-installing-jenkins-on-AWS/ . You can skip "Configure a Cloud" part for this demo. Please note some commands from this link might give errors, below are the workarounds:
 
-1. If you get daemonize error while running the command `sudo yum install jenkins java-1.8.0-openjdk-devel -y` then , run the commands from the answer of https://stackoverflow.com/questions/68806741/how-to-fix-yum-update-of-jenkins
 
-2. Install Docker on the EC2 after Jenkins is installed by following the instructions on https://serverfault.com/questions/836198/how-to-install-docker-on-aws-ec2-instance-with-ami-ce-ee-update
+### Pre-Requisites
+1. Latest Kubernetes
+2. Helm
+3. Metrics-server
+4. Nginx-Ingress
+```
+helm install --name nginx-ingress  --namespace kube-system stable/nginx-ingress --set controller.service.type=NodePort
 
-3. Run `sudo chmod 666 /var/run/docker.sock` on the EC2 after Docker is installed.
+kubectl -n kube-system edit deploy nginx-ingress-controller
+...
+spec:
+      containers:
+      - args:
+        - /nginx-ingress-controller
+        - --default-backend-service=kube-system/nginx-ingress-default-backend
+        - --election-id=ingress-controller-leader
+        - --ingress-class=nginx
+        - --enable-ssl-passthrough # Add this flag
+        - --configmap=kube-system/nginx-ingress-controller
+...
+```
 
-4. Install Git on the EC2 by running `sudo yum install git`
+**Note: Follow k8s documents for above requirements**
 
-### Jenkins plugins
+### Deploy ArgoCD
+```
+#   kubectl create namespace argocd
 
-Install the following plugins for the demo.
-- Amazon EC2 plugin (No need to set up Configure Cloud after)
-- Docker plugin  
-- Docker Pipeline
-- GitHub Integration Plugin
-- Parameterized trigger Plugin
+#   kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
-## ArgoCD installation 
+#   cat <<EOF >> argocd-ingress.yaml
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: argocd-server-ingress
+  namespace: argocd
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/ssl-passthrough: "true"
+spec:
+  tls:
+  - secretName: argocd-secret
+    hosts:
+    - deploy.brilliant.com.bd
+  rules:
+  - host: deploy.brilliant.com.bd
+    http:
+      paths:
+      - backend:
+          serviceName: argocd-server
+          servicePort: https
+        path: /
+EOF
 
-Install ArgoCD in your Kubernetes cluster following this link - https://argo-cd.readthedocs.io/en/stable/getting_started/
+#   kubectl apply -f  argocd-ingress.yaml 
+```
 
-## How to run!
-Follow along with my Udemy Kubernetes course lectures (GitOps Chapter) to understand how it works, detailed setup instructions, with step by step demo. My highest rated Kubernetes EKS discounted Udemy course link in www.cloudwithraj.com
+
+### ArgoCD web Login & default Password change
+```
+web login:
+https://deploy.brilliant.com.bd:31191/applications
+user: admin
+pass: "password is the argocd pod name"
+
+### Enable ArgoCD Cli
+
+VERSION=$(curl --silent "https://api.github.com/repos/argoproj/argo-cd/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+
+echo $VERSION
+curl -sSL -o /usr/local/bin/argocd https://github.com/argoproj/argo-cd/releases/download/$VERSION/argocd-linux-amd64
+
+argocd login deploy.brilliant.com.bd:31191
+argocd account update-password
+argocd logout deploy.brilliant.com.bd:31191
+```
+
+### Setup a helm repo for helm-toolkit
+```
+1. Create a new github repo & clone it locally
+
+#    cd helm-charts    # git repo name
+
+#    cp -r  /opt/openstack-helm-infra/helm-toolkit .
+
+#     helm package helm-toolkit
+
+#    helm repo index --url https://cloud-operations.github.io/helm-charts/ .
+
+#    git add . 
+
+#    git commit -m "Added helm repo"
+
+#    git push 
+
+Now it’s time to publish the contents of our git repository as Github pages. Go back to your browser, in the “settings” section of your git repository, scroll down to Github Pages and set source to master branch.
+
+# To verify add repo locally
+
+helm repo add repo-add-test https://cloud-operation.github.io/helm-charts/
+
+helm update
+helm search --repo  repo-add-test
+
+```
+```
